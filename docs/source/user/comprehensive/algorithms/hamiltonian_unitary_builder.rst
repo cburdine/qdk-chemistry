@@ -208,6 +208,101 @@ Example::
     #   exp(-i * +0.2500 * IXII)
     #   exp(-i * +0.2500 * XIII)
 
+.. _zassenhaus-builder:
+
+Zassenhaus product formulas
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. rubric:: Factory name: ``"zassenhaus"``
+
+The Zassenhaus builder approximates the time-evolution operator by starting from
+an ordered product of exponentials and appending explicit nested-commutator
+correction exponentials.  For a Hamiltonian split into ordered groups
+
+.. math::
+
+   H = \sum_{\gamma=1}^{\Gamma} H_\gamma,
+   \qquad
+   A_\gamma = -i t H_\gamma,
+
+the Zassenhaus formula is
+
+.. math::
+
+   e^{A_1+\cdots+A_\Gamma}
+   =
+   e^{A_1} e^{A_2} \cdots e^{A_\Gamma}
+   e^{C_2} e^{C_3} \cdots,
+
+where each :math:`C_n` is a homogeneous nested-commutator polynomial of degree
+:math:`n`.  For two groups,
+
+.. math::
+
+   C_2 = -\frac{1}{2}[A_1,A_2],
+
+.. math::
+
+   C_3 =
+   \frac{1}{6}[A_1,[A_1,A_2]]
+   +
+   \frac{1}{3}[A_2,[A_1,A_2]].
+
+An order-:math:`p` Zassenhaus expansion keeps corrections through :math:`C_p`,
+giving local error :math:`O(t^{p+1})`.  With :math:`N` time divisions,
+
+.. math::
+
+   e^{-itH}
+   \approx
+   \left[
+      Z_p\!\left(\frac{t}{N}\right)
+   \right]^N.
+
+For Pauli Hamiltonians, commuting groups are exponentiated exactly as products
+of Pauli rotations.  Nested commutators that vanish are discarded, and repeated
+nested commutators are memoized while evaluating the symbolic commutator plan.
+When a correction exponent :math:`C_n = \sum_\ell c_\ell P_\ell` contains
+noncommuting Pauli terms, the builder recursively compiles :math:`e^{C_n}` to a
+sufficient internal order so that correction compilation does not reduce the
+requested outer order.
+
+The number of Zassenhaus divisions :math:`N` can be specified directly
+(``num_divisions``) or computed automatically from a ``target_accuracy`` using
+one of two error bounds:
+
+Commutator bound (default)
+   A tighter bound based on nested-commutator structure.
+
+Naive bound
+   A looser triangle-inequality bound based on coefficient norms.
+
+When both ``num_divisions`` and ``target_accuracy`` are specified, the builder
+uses whichever requires more divisions.
+
+.. rubric:: Settings
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 15 60
+
+   * - Setting
+     - Type
+     - Description
+   * - ``order``
+     - int
+     - Zassenhaus expansion order. Corrections through :math:`C_p` are included. Default is 1.
+   * - ``target_accuracy``
+     - float
+     - Target approximation error :math:`\epsilon`. When set to 0.0 (default), automatic step-count estimation is disabled.
+   * - ``num_divisions``
+     - int
+     - Explicit number of Zassenhaus time divisions :math:`N`. When set to 0 (default), determined from ``target_accuracy``.
+   * - ``error_bound``
+     - str
+     - Error bound strategy: ``"commutator"`` (default, tighter) or ``"naive"`` (simpler).
+   * - ``weight_threshold``
+     - float
+     - Coefficient threshold below which Pauli terms and commutator corrections are discarded. Default is 1e-12.
 
 Related classes
 ---------------
