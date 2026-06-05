@@ -8,6 +8,9 @@
 from collections.abc import Hashable
 from fractions import Fraction
 
+import numpy as np
+import scipy
+
 from qdk_chemistry.utils.zassenhaus_generation import CommutatorPlan, PlanExpr, PlanTerm, zassenhaus_commutator_plan
 
 ExpandedTerm = Hashable | tuple["ExpandedTerm", "ExpandedTerm"]
@@ -32,6 +35,38 @@ def _assert_plan_is_dependency_ordered(plan: CommutatorPlan, leaves: tuple[Hasha
         assert left in available
         assert right in available
         available.add(node)
+
+
+def _commutator(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    return left @ right - right @ left
+
+
+def _evaluate_matrix_plan_term(ref: PlanTerm, plan: CommutatorPlan, leaves: tuple[np.ndarray, ...]) -> np.ndarray:
+    if ref not in plan:
+        return leaves[ref]
+
+    left, right = plan[ref]
+    return _commutator(
+        _evaluate_matrix_plan_term(left, plan, leaves),
+        _evaluate_matrix_plan_term(right, plan, leaves),
+    )
+
+
+def _zassenhaus_matrix_product(leaves: tuple[np.ndarray, ...], *, order: int, time: float) -> np.ndarray:
+    planned_exponents, plan = zassenhaus_commutator_plan(tuple(range(len(leaves))), max_order=order)
+
+    product = np.eye(leaves[0].shape[0], dtype=complex)
+    for leaf in leaves:
+        product = product @ scipy.linalg.expm(time * leaf)
+
+    for degree in range(2, order + 1):
+        correction = sum(
+            float(coeff) * _evaluate_matrix_plan_term(ref, plan, leaves)
+            for ref, coeff in planned_exponents[degree].items()
+        )
+        product = product @ scipy.linalg.expm((time**degree) * correction)
+
+    return product
 
 
 def test_zassenhaus_generation_two_operator_formula_plan():
@@ -77,3 +112,29 @@ def test_zassenhaus_generation_three_operator_formula_plan():
         ("A", "C"): Fraction(-1, 2),
         ("B", "C"): Fraction(-1, 2),
     }
+
+
+def test_zassenhaus_generation_matrix_product_scales_for_noncommuting_leaves():
+    """Generated plans give the expected asymptotic order for arbitrary noncommuting matrices."""
+    rng = np.random.default_rng(123)
+    leaves = tuple(
+        (rng.normal(size=(4, 4)) + 1j * rng.normal(size=(4, 4))) / 8.0
+        for _ in range(4)
+    )
+    exact_generator = sum(leaves)
+    times = np.logspace(-2, -1, 5)
+
+    for order in (2, 3, 4):
+        errors = np.array(
+            [
+                np.linalg.norm(
+                    _zassenhaus_matrix_product(leaves, order=order, time=time)
+                    - scipy.linalg.expm(time * exact_generator),
+                    ord=2,
+                )
+                for time in times
+            ]
+        )
+        slope = np.polyfit(np.log(times), np.log(errors), deg=1)[0]
+
+        assert np.isclose(slope, order + 1, atol=0.1)

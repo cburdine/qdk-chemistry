@@ -16,6 +16,7 @@ References:
 from __future__ import annotations
 
 from itertools import product
+from math import ceil
 
 import numpy as np
 
@@ -36,7 +37,7 @@ from qdk_chemistry.data.unitary_representation.containers.pauli_product_formula 
     PauliProductFormulaContainer,
 )
 from qdk_chemistry.utils import Logger
-from qdk_chemistry.utils.pauli_commutation import commutator
+from qdk_chemistry.utils.pauli_commutation import commutator, do_pauli_maps_commute
 from qdk_chemistry.utils.zassenhaus_generation import PlanTerm, zassenhaus_commutator_plan
 
 __all__: list[str] = ["Zassenhaus", "ZassenhausSettings"]
@@ -312,6 +313,7 @@ class Zassenhaus(TimeEvolutionBuilder):
 
         for n in range(2, order + 1):
             phase = 1j * ((-1j) ** n)
+            correction_terms: list[ExponentiatedPauliTerm] = []
 
             for ref, coeff in planned_exponents[n].items():
                 sequence = leaf_sequence(ref)
@@ -319,7 +321,7 @@ class Zassenhaus(TimeEvolutionBuilder):
 
                 for choices in product(*subgroup_ranges):
                     contribution = evaluate(ref, choices) * (phase * complex(coeff))
-                    terms.extend(
+                    correction_terms.extend(
                         self._exponentiate_commuting(
                             contribution,
                             time=time**n,
@@ -327,7 +329,67 @@ class Zassenhaus(TimeEvolutionBuilder):
                         )
                     )
 
+            terms.extend(self._decompose_correction_exponent(correction_terms, correction_degree=n, order=order))
+
         return terms
+
+    def _decompose_correction_exponent(
+        self,
+        correction_terms: list[ExponentiatedPauliTerm],
+        *,
+        correction_degree: int,
+        order: int,
+    ) -> list[ExponentiatedPauliTerm]:
+        """Decompose one Zassenhaus correction exponent into Pauli rotations.
+
+        The Zassenhaus correction :math:`C_n t^n` is generally a sum of
+        non-commuting Pauli terms.  Emitting those terms with a first-order
+        product formula introduces an internal error of order :math:`t^{2n}`.
+        If that error would be visible at the requested Zassenhaus order, this
+        method recursively compiles the correction exponent to a sufficiently
+        high internal Zassenhaus order.
+        """
+        if not correction_terms:
+            return []
+
+        if self._terms_commute(correction_terms):
+            return correction_terms
+
+        internal_order = ceil((order + 1) / correction_degree) - 1
+        if internal_order <= 1:
+            return correction_terms
+
+        correction_hamiltonian = self._terms_to_hamiltonian(correction_terms)
+        internal_builder = Zassenhaus(order=internal_order, time=1.0)
+        internal_execution_terms = internal_builder._decompose_zassenhaus_step(
+            correction_hamiltonian, time=1.0, atol=0.0
+        )
+        return list(reversed(internal_execution_terms))
+
+    def _terms_commute(self, terms: list[ExponentiatedPauliTerm]) -> bool:
+        """Return whether all Pauli rotations in *terms* mutually commute."""
+        for i, left in enumerate(terms):
+            for right in terms[i + 1 :]:
+                if not do_pauli_maps_commute(left.pauli_term, right.pauli_term):
+                    return False
+        return True
+
+    def _terms_to_hamiltonian(self, terms: list[ExponentiatedPauliTerm]) -> QubitHamiltonian:
+        """Convert exponentiated Pauli terms to a Hamiltonian with matching angles."""
+        num_qubits = 1 + max((qubit for term in terms for qubit in term.pauli_term), default=0)
+        labels = []
+        coefficients = []
+        for term in terms:
+            labels.append(self._pauli_map_to_label(term.pauli_term, num_qubits))
+            coefficients.append(term.angle)
+        return QubitHamiltonian(pauli_strings=labels, coefficients=np.asarray(coefficients, dtype=complex))
+
+    def _pauli_map_to_label(self, pauli_term: dict[int, str], num_qubits: int) -> str:
+        """Convert a qubit-indexed Pauli map to a QubitHamiltonian label."""
+        chars = ["I"] * num_qubits
+        for qubit, pauli in pauli_term.items():
+            chars[num_qubits - qubit - 1] = pauli
+        return "".join(chars)
 
     def _group_terms(
         self,

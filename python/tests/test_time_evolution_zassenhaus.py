@@ -50,6 +50,108 @@ def _pauli_label_from_map(pauli_term: dict[int, str], num_qubits: int) -> str:
     return "".join(pauli_term.get(i, "I") for i in reversed(range(num_qubits)))
 
 
+def _pauli_label_from_qubit_ops(num_qubits: int, qubit_ops: dict[int, str]) -> str:
+    """Helper to build a QubitHamiltonian Pauli label from qubit-indexed operators."""
+    chars = ["I"] * num_qubits
+    for qubit, pauli in qubit_ops.items():
+        chars[num_qubits - qubit - 1] = pauli
+    return "".join(chars)
+
+
+def _hamiltonian_matrix(hamiltonian: QubitHamiltonian) -> np.ndarray:
+    """Helper to build a dense Hamiltonian matrix from Pauli strings."""
+    return sum(
+        complex(coeff).real * _pauli_product_matrix(label)
+        for label, coeff in zip(hamiltonian.pauli_strings, hamiltonian.coefficients, strict=True)
+    )
+
+
+def _zassenhaus_unitary_matrix(hamiltonian: QubitHamiltonian, *, order: int, time: float) -> np.ndarray:
+    """Helper to build the dense matrix emitted by the Zassenhaus builder."""
+    builder = Zassenhaus(num_divisions=1, order=order, time=time)
+    container = builder.run(hamiltonian).get_container()
+
+    step_unitary = np.eye(2**hamiltonian.num_qubits, dtype=complex)
+    for term in container.step_terms:
+        pauli_label = _pauli_label_from_map(term.pauli_term, num_qubits=hamiltonian.num_qubits)
+        pauli_matrix = _pauli_product_matrix(pauli_label)
+        step_unitary = scipy.linalg.expm(-1j * term.angle * pauli_matrix) @ step_unitary
+
+    return np.linalg.matrix_power(step_unitary, container.step_reps)
+
+
+def _fit_zassenhaus_error_slope(hamiltonian: QubitHamiltonian, *, order: int) -> float:
+    """Fit log(||U_exact - U_zassenhaus||) vs log(t) over t in [1e-3, 1e-1]."""
+    hamiltonian_matrix = _hamiltonian_matrix(hamiltonian)
+    times = np.logspace(-3, -1, 5)
+    errors = np.array(
+        [
+            np.linalg.norm(
+                _zassenhaus_unitary_matrix(hamiltonian, order=order, time=t)
+                - scipy.linalg.expm(-1j * t * hamiltonian_matrix),
+                ord=2,
+            )
+            for t in times
+        ]
+    )
+
+    # Fourth-order H2 errors at the smallest times are near machine precision;
+    # dropping those points keeps the fitted asymptotic slope meaningful.
+    resolved = errors > 1e-13
+    assert np.count_nonzero(resolved) >= 3
+    return float(np.polyfit(np.log(times[resolved]), np.log(errors[resolved]), deg=1)[0])
+
+
+def _open_heisenberg_chain_4_site() -> QubitHamiltonian:
+    """Return the 4-site open Heisenberg chain Hamiltonian with J=1."""
+    labels = [
+        _pauli_label_from_qubit_ops(4, {site: pauli, site + 1: pauli})
+        for site in range(3)
+        for pauli in ("X", "Y", "Z")
+    ]
+    return QubitHamiltonian(pauli_strings=labels, coefficients=[1.0] * len(labels))
+
+
+def _h2_sto3g_jordan_wigner_hamiltonian() -> QubitHamiltonian:
+    """Return the H2/STO-3G active-space Jordan-Wigner qubit Hamiltonian."""
+    return QubitHamiltonian(
+        pauli_strings=[
+            "ZIZI",
+            "IIII",
+            "XXYY",
+            "IIZZ",
+            "IIIZ",
+            "IZII",
+            "IIZI",
+            "ZIII",
+            "IZIZ",
+            "ZZII",
+            "XXXX",
+            "IZZI",
+            "ZIIZ",
+            "YYXX",
+            "YYYY",
+        ],
+        coefficients=[
+            0.17340571759639567,
+            -0.8188627653683169,
+            0.04561253326547957,
+            0.1193637983645801,
+            0.1680725967904809,
+            0.1680725967904809,
+            -0.21350380057261933,
+            -0.21350380057261933,
+            0.16763919534691857,
+            0.1193637983645801,
+            0.04561253326547957,
+            0.16497633163005967,
+            0.16497633163005967,
+            0.04561253326547957,
+            0.04561253326547957,
+        ],
+    )
+
+
 class TestZassenhaus:
     """Tests for the Zassenhaus class."""
 
@@ -353,3 +455,21 @@ class TestZassenhaus:
             )
         error_actual = np.linalg.norm(u_zassenhaus - u_exact, ord=2)
         assert error_actual < 1e-5
+
+    @pytest.mark.slow
+    @pytest.mark.parametrize(
+        ("hamiltonian_factory", "order"),
+        [
+            pytest.param(_open_heisenberg_chain_4_site, 2, id="heisenberg4-order2"),
+            pytest.param(_open_heisenberg_chain_4_site, 3, id="heisenberg4-order3"),
+            pytest.param(_open_heisenberg_chain_4_site, 4, id="heisenberg4-order4"),
+            pytest.param(_h2_sto3g_jordan_wigner_hamiltonian, 2, id="h2-sto3g-jw-order2"),
+            pytest.param(_h2_sto3g_jordan_wigner_hamiltonian, 3, id="h2-sto3g-jw-order3"),
+            pytest.param(_h2_sto3g_jordan_wigner_hamiltonian, 4, id="h2-sto3g-jw-order4"),
+        ],
+    )
+    def test_zassenhaus_operator_norm_error_has_expected_order_scaling(self, hamiltonian_factory, order):
+        """Check empirical operator-norm error scaling for nontrivial four-qubit Hamiltonians."""
+        slope = _fit_zassenhaus_error_slope(hamiltonian_factory(), order=order)
+
+        assert np.isclose(slope, order + 1, atol=0.1)
