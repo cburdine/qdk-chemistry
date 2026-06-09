@@ -19,6 +19,12 @@ References:
 
 """
 
+# --------------------------------------------------------------------------------------------
+# Copyright (c) Microsoft Corporation. All rights reserved.
+# Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+# --------------------------------------------------------------------------------------------
+
+
 from __future__ import annotations
 
 import math
@@ -213,11 +219,12 @@ def zassenhaus_steps_naive(
     if order < 1:
         raise ValueError(f"Zassenhaus order must be positive, got {order}.")
 
-    real_terms = hamiltonian.get_real_coefficients(tolerance=weight_threshold)
-    one_norm = sum(abs(coeff) for _, coeff in real_terms)
+    one_norm = _hamiltonian_one_norm(hamiltonian, weight_threshold=weight_threshold)
+
+    num_real_terms = len(hamiltonian.get_real_coefficients(tolerance=weight_threshold))
     coefficient_sum = _zassenhaus_coefficient_sum(
         order=order,
-        num_terms=len(real_terms),
+        num_terms=num_real_terms,
         commutator_exponents=commutator_exponents,
     )
 
