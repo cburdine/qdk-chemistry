@@ -10,11 +10,6 @@ import os
 import numpy as np
 import pytest
 
-# The SCF stack imports matplotlib transitively in some environments.  Point the
-# cache at a writable location so this slow integration test does not warn or
-# fail when the user's home directory is read-only under pytest.
-os.environ.setdefault("MPLCONFIGDIR", "/tmp")
-
 from qdk_chemistry.algorithms import create
 from qdk_chemistry.data import AlgorithmRef, MajoranaMapping, PauliProductFormulaContainer, Structure
 from qdk_chemistry.utils import Logger
